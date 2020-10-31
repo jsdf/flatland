@@ -60,6 +60,7 @@ class PanZoomBehavior {
     this.canvas = canvas;
     this.canvas.addEventListener('mousedown', this.onmousedown);
     this.canvas.addEventListener('mouseup', this.onmouseup);
+    this.canvas.addEventListener('mouseout', this.onmouseup);
     this.canvas.addEventListener('mousemove', this.onmousemove);
     this.canvas.addEventListener('wheel', this.onwheel);
   }
@@ -68,6 +69,7 @@ class PanZoomBehavior {
     if (!this.canvas) return;
     this.canvas.removeEventListener('mousedown', this.onmousedown);
     this.canvas.removeEventListener('mouseup', this.onmouseup);
+    this.canvas.removeEventListener('mouseout', this.onmouseup);
     this.canvas.removeEventListener('mousemove', this.onmousemove);
     this.canvas.removeEventListener('wheel', this.onwheel);
     this.canvas = null;

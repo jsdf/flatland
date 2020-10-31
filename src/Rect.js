@@ -22,6 +22,10 @@ export default class Rect {
   intersectsRect(other) {
     return collision(this, other);
   }
+
+  clone() {
+    return new Rect({position: this.position, size: this.size});
+  }
 }
 
 function collision(a, b) {

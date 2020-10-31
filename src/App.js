@@ -35,6 +35,10 @@ const defaultStyle = {
   fillStyle: 'transparent',
 };
 
+const defaultTextStyle = {
+  font: '12px Lucida Grande',
+};
+
 const scaleDegrees = range(7);
 
 function useWindowDimensions() {
@@ -58,15 +62,20 @@ function useWindowDimensions() {
   return windowDimensions;
 }
 
+function getDPR() {
+  return window.devicePixelRatio || 1;
+}
+
 function useCanvasContext2d() {
   const canvasRef = useRef(null);
   const [state, setState] = useState(null);
 
   useEffect(() => {
     if (canvasRef.current && (!state || state.canvas != canvasRef.current)) {
+      const ctx = canvasRef.current?.getContext('2d');
       setState({
         canvas: canvasRef.current,
-        ctx: canvasRef.current?.getContext('2d'),
+        ctx,
       });
     }
   });
@@ -87,11 +96,42 @@ function drawRect(ctx, rect, attrs) {
   Object.assign(ctx, defaultStyle, attrs);
 
   if (attrs.fillStyle) {
-    ctx.fillRect(rect.position.x, rect.position.y, rect.size.x, rect.size.y);
+    ctx.fillRect(
+      Math.floor(rect.position.x),
+      Math.floor(rect.position.y),
+      Math.floor(rect.size.x),
+      Math.floor(rect.size.y)
+    );
   }
   if (attrs.strokeStyle) {
-    ctx.strokeRect(rect.position.x, rect.position.y, rect.size.x, rect.size.y);
+    ctx.strokeRect(
+      Math.floor(rect.position.x),
+      Math.floor(rect.position.y),
+      Math.max(Math.floor(rect.size.x - 1), 0),
+      Math.max(Math.floor(rect.size.y - 1, 0))
+    );
   }
+}
+
+function drawTextRect(ctx, text, rect, attrs, props) {
+  ctx.save();
+  Object.assign(ctx, defaultTextStyle, attrs);
+
+  ctx.rect(
+    Math.floor(rect.position.x),
+    Math.floor(rect.position.y),
+    Math.floor(rect.size.x),
+    Math.floor(rect.size.y)
+  );
+  ctx.clip();
+
+  ctx.fillText(
+    text,
+    Math.floor(rect.position.x + (props?.offset?.x ?? 0)),
+    Math.floor(rect.position.y + (props?.offset?.y ?? 0))
+  );
+
+  ctx.restore();
 }
 
 function getExtents(events) {
@@ -401,38 +441,55 @@ function App() {
   const viewport = useViewport(viewportState);
 
   const windowDimensions = useWindowDimensions();
+  const canvasLogicalDimensions = windowDimensions;
 
   useEffect(() => {
     if (!ctx) return;
+    const {canvas} = ctx;
+    const dpr = getDPR();
     // clear canvas & update to fill window
-    ctx.canvas.width = windowDimensions.width;
-    ctx.canvas.height = windowDimensions.height;
+    canvas.width = canvasLogicalDimensions.width * dpr;
+    canvas.height = canvasLogicalDimensions.height * dpr;
+
+    canvas.style.width = `${canvasLogicalDimensions.width}px`;
+    canvas.style.height = `${canvasLogicalDimensions.height}px`;
+
+    // Scale all drawing operations by the dpr, so you
+    // don't have to worry about the difference.
+    ctx.scale(dpr, dpr);
 
     drawnElementsRef.current = [];
 
     scaleDegrees.forEach((i) => {
-      ctx.globalAlpha = 0.2;
-      drawRect(
-        ctx,
-        new Rect({
-          position: viewport.positionToScreen({
-            x: 0,
-            y: i * TIMELINE_ROW_HEIGHT,
-          }),
-          size: viewport.sizeToScreen({
-            x:
-              Math.ceil((extents.start + extents.size) / 4) *
-              4 *
-              QUARTER_NOTE_WIDTH,
-            y: TIMELINE_ROW_HEIGHT,
-          }),
+      const rect = new Rect({
+        position: viewport.positionToScreen({
+          x: 0,
+          y: i * TIMELINE_ROW_HEIGHT,
         }),
+        size: viewport.sizeToScreen({
+          x:
+            Math.ceil((extents.start + extents.size) / 4) *
+            4 *
+            QUARTER_NOTE_WIDTH,
+          y: TIMELINE_ROW_HEIGHT,
+        }),
+      });
+
+      ctx.globalAlpha = 0.2;
+      drawRect(ctx, rect, {
+        fillStyle: colors[i],
+      });
+      ctx.globalAlpha = 1;
+
+      drawTextRect(
+        ctx,
+        String(i + 1),
+        rect,
         {
           fillStyle: colors[i],
-        }
+        },
+        {offset: {x: 3, y: 14}}
       );
-
-      ctx.globalAlpha = 1;
     });
 
     events.forEach((ev) => {
@@ -456,7 +513,7 @@ function App() {
         object: ev,
       });
     });
-  }, [ctx, events, viewport, selection, windowDimensions]);
+  }, [ctx, events, viewport, selection, canvasLogicalDimensions]);
 
   const onSelectRect = useCallback((selectionBoxRect) => {
     const intersecting = findIntersectingEvents(
