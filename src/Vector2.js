@@ -45,4 +45,8 @@ export default class Vector2 {
   distanceTo(other) {
     return Math.sqrt((this.x - other.x) ** 2 + (this.y - other.y) ** 2);
   }
+
+  toJSON() {
+    return {x: this.x, y: this.y};
+  }
 }

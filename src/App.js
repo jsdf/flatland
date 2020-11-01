@@ -5,7 +5,12 @@ import debounce from 'debounce';
 import React from 'react';
 import ReactDOM from 'react-dom';
 
-import {useViewport, useViewportControls} from './viewport';
+import {
+  useViewport,
+  useViewportControls,
+  makeViewportState,
+  ViewportStateSerializer,
+} from './viewport';
 import {getMouseEventPos} from './mouseUtils';
 import Vector2 from './Vector2';
 import Rect from './Rect';
@@ -13,6 +18,7 @@ import {range, scaleLinear} from './utils';
 
 import {getSelectionBox} from './selection';
 import useRefOnce from './useRefOnce';
+import useLocalStorageAsync from './useLocalStorageAsync';
 
 const {useEffect, useMemo, useRef, useState, useCallback} = React;
 
@@ -78,7 +84,8 @@ function useCanvasContext2d() {
         ctx,
       });
     }
-  });
+  }, [state]);
+
   return {
     canvasRef,
     ctx: state?.ctx,
@@ -286,6 +293,61 @@ const Controls = React.memo(function Controls({mode, onModeChange}) {
   );
 });
 
+class DragEventBehavior {
+  dragging = false;
+  props = {};
+
+  setProps(props) {
+    this.props = props;
+  }
+
+  setEnabled(enabled) {
+    if (this.enabled === enabled) return;
+    this.dragging = false;
+    this.enabled = enabled;
+  }
+
+  bind(canvas) {
+    this.canvas = canvas;
+
+    this.canvas.addEventListener('mousedown', this.onMouseDown);
+    this.canvas.addEventListener('mouseup', this.onMouseUp);
+    this.canvas.addEventListener('mousemove', this.onMouseMove);
+    this.canvas.addEventListener('mouseout', this.onMouseOut);
+  }
+  unbind() {
+    if (!this.canvas) return;
+    this.canvas.removeEventListener('mousedown', this.onMouseDown);
+    this.canvas.removeEventListener('mouseup', this.onMouseUp);
+    this.canvas.removeEventListener('mousemove', this.onMouseMove);
+    this.canvas.removeEventListener('mouseout', this.onMouseOut);
+    this.canvas = null;
+  }
+
+  onMouseDown = (e) => {
+    if (!this.enabled) return;
+
+    this.dragging = this.props.onDragStart?.(e);
+  };
+
+  onMouseUp = (e) => {
+    if (!this.enabled) return;
+    this.dragging = false;
+  };
+
+  onMouseOut = (e) => {
+    if (!this.enabled) return;
+    this.dragging = false;
+  };
+
+  onMouseMove = (e) => {
+    if (!this.enabled) return;
+    if (!this.dragging) return;
+
+    this.props.onDragMove?.(e);
+  };
+}
+
 class SelectBoxBehavior {
   rect = new Rect();
   selectionStart = new Vector2();
@@ -301,6 +363,7 @@ class SelectBoxBehavior {
     if (this.enabled === enabled) return;
     if (!enabled) {
       this.selectionBox.render(null);
+      this.selecting = false;
     }
     this.enabled = enabled;
   }
@@ -408,6 +471,11 @@ const SelectMode = React.memo(function SelectMode({
   );
 });
 
+const LOCALSTORAGE_CONFIG = {
+  baseKey: 'roygbiv',
+  schemaVersion: '2',
+};
+
 function App() {
   const {canvasRef, ctx} = useCanvasContext2d();
 
@@ -417,7 +485,11 @@ function App() {
 
   const drawnElementsRef = useRef([]);
   const [selection, setSelection] = useState(new Set());
-  const [mode, setMode] = useState('select');
+  const [mode, setMode] = useLocalStorageAsync(
+    'mode',
+    'select',
+    LOCALSTORAGE_CONFIG
+  );
 
   const onSelect = useCallback((e) => {
     const mousePos = getMouseEventPos(e, canvasRef.current);
@@ -429,14 +501,21 @@ function App() {
     setSelection(new Set(intersecting ? [intersecting] : []));
   }, []);
 
-  const [viewportState, setViewportState] = useViewportControls(
-    canvasRef.current,
+  const [viewportState, setViewportState] = useLocalStorageAsync(
+    'viewportState',
+    makeViewportState,
     {
-      wheelZoom: {x: true, y: false},
-      dragPan: mode === 'hand',
-      onSelect: mode !== 'select' ? onSelect : null,
+      ...ViewportStateSerializer,
+      ...LOCALSTORAGE_CONFIG,
     }
   );
+  useViewportControls(canvasRef.current, {
+    wheelZoom: {x: true, y: false},
+    dragPan: mode === 'hand',
+    onSelect: mode !== 'select' ? onSelect : null,
+    viewportState,
+    setViewportState,
+  });
 
   const viewport = useViewport(viewportState);
 
@@ -514,6 +593,33 @@ function App() {
       });
     });
   }, [ctx, events, viewport, selection, canvasLogicalDimensions]);
+
+  const onDragStart = useCallback((e) => {
+    const mousePos = getMouseEventPos(e, canvasRef.current);
+    const intersecting = getIntersectingEvent(
+      mousePos,
+      drawnElementsRef.current
+    );
+
+    if (!intersecting) return false;
+
+    if (!selection.has(intersecting)) {
+      setSelection(new Set([intersecting]));
+    }
+
+    return true;
+  }, []);
+  const onDragMove = useCallback((e) => {
+    const mousePos = getMouseEventPos(e, canvasRef.current);
+    console.log('dragging to', mousePos);
+  }, []);
+
+  const dragEventBehaviorRef = useRef(new DragEventBehavior());
+  dragEventBehaviorRef.current.setEnabled(mode !== 'hand');
+  dragEventBehaviorRef.current.setProps({
+    onDragStart,
+    onDragMove,
+  });
 
   const onSelectRect = useCallback((selectionBoxRect) => {
     const intersecting = findIntersectingEvents(

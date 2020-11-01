@@ -34,23 +34,24 @@ function zoomAtPoint(
   };
 }
 
-class PanZoomBehavior {
+export class PanZoomBehavior {
   isMouseDown = false;
   dragMoved = false;
   panAtDragStart = new Vector2();
   currentPan = new Vector2();
   startMousePos = new Vector2();
-  options = {};
+  props = {};
 
-  constructor(setViewportState) {
-    this.setViewportState = setViewportState;
+  constructor() {}
+
+  setProps(props) {
+    if (props.viewportState != this.props.viewportState) {
+      this.onViewportStateChange(props.viewportState);
+    }
+    this.props = props;
   }
 
-  setOptions(options) {
-    this.options = options;
-  }
-
-  onViewportState(viewportState) {
+  onViewportStateChange(viewportState) {
     // store pan value every time it changes so our event handlers can
     // access it without needing to be re-bound every time it changes
     this.currentPan.copyFrom(viewportState.pan);
@@ -76,7 +77,7 @@ class PanZoomBehavior {
   }
 
   onmousedown = (e) => {
-    this.options.onMouseDown && this.options.onMouseDown(e);
+    this.props.onMouseDown && this.props.onMouseDown(e);
     this.isMouseDown = true;
     this.dragMoved = false;
 
@@ -85,15 +86,15 @@ class PanZoomBehavior {
   };
 
   onmouseup = (e) => {
-    this.options.onMouseUp && this.options.onMouseUp(e);
+    this.props.onMouseUp && this.props.onMouseUp(e);
 
     const disanceMoved = getMouseEventPos(e, this.canvas).distanceTo(
       this.startMousePos
     );
     if (this.dragMoved && disanceMoved > SELECT_MAX_MOVE_DISTANCE) {
-      this.options.onDragEnd && this.options.onDragEnd(e);
+      this.props.onDragEnd && this.props.onDragEnd(e);
     } else {
-      this.options.onSelect && this.options.onSelect(e);
+      this.props.onSelect && this.props.onSelect(e);
     }
 
     this.isMouseDown = false;
@@ -101,11 +102,11 @@ class PanZoomBehavior {
   };
 
   onmousemove = (e) => {
-    this.options.onMouseMove && this.options.onMouseMove(e);
+    this.props.onMouseMove && this.props.onMouseMove(e);
 
-    if (this.options.dragPan && this.isMouseDown) {
+    if (this.props.dragPan && this.isMouseDown) {
       if (!this.dragMoved) {
-        this.options.onDragStart && this.options.onDragStart(e);
+        this.props.onDragStart && this.props.onDragStart(e);
       }
       this.dragMoved = true;
 
@@ -113,7 +114,7 @@ class PanZoomBehavior {
         this.startMousePos
       );
 
-      this.setViewportState((s) => {
+      this.props.setViewportState((s) => {
         // pan is in world (unzoomed) coords so we must scale our translations
         const translation = movementSinceStart.clone().div(s.zoom).mul({
           x: -1,
@@ -144,14 +145,14 @@ class PanZoomBehavior {
 
     const zoomScaleFactor = 1 + zoomSpeed * -deltaY;
 
-    this.setViewportState((s) => {
+    this.props.setViewportState((s) => {
       const updated = zoomAtPoint(s, mousePosInView, zoomScaleFactor);
 
-      if (this.options?.wheelZoom?.x !== true) {
+      if (this.props?.wheelZoom?.x !== true) {
         updated.zoom.x = s.zoom.x;
         updated.pan.x = s.pan.x;
       }
-      if (this.options?.wheelZoom?.y !== true) {
+      if (this.props?.wheelZoom?.y !== true) {
         updated.zoom.y = s.zoom.y;
         updated.pan.y = s.pan.y;
       }
@@ -164,19 +165,35 @@ class PanZoomBehavior {
   };
 }
 
-export function useViewportControls(canvas, options) {
-  const [viewportState, setViewportState] = useState(() => ({
+export function makeViewportState() {
+  return {
     zoom: new Vector2({x: 1, y: 1}),
     pan: new Vector2(),
-  }));
+  };
+}
 
-  const panZoomRef = useRefOnce(() => new PanZoomBehavior(setViewportState));
+export const ViewportStateSerializer = {
+  stringify(state) {
+    return JSON.stringify(state);
+  },
+  parse(json) {
+    const data = JSON.parse(json);
+    if (!data) return null;
+    return {
+      zoom: new Vector2(data.zoom),
+      pan: new Vector2(data.pan),
+    };
+  },
+};
 
-  panZoomRef.current.setOptions(options);
+export function useViewportState() {
+  return useState(makeViewportState);
+}
 
-  useEffect(() => {
-    panZoomRef.current.onViewportState(viewportState);
-  }, [viewportState]);
+export function useViewportControls(canvas, props) {
+  const panZoomRef = useRefOnce(() => new PanZoomBehavior());
+
+  panZoomRef.current.setProps(props);
 
   useEffect(() => {
     if (!canvas) return;
@@ -187,8 +204,6 @@ export function useViewportControls(canvas, options) {
       panZoomRef.current.unbind();
     };
   }, [canvas]);
-
-  return [viewportState, setViewportState];
 }
 
 export function useViewport({zoom, pan}) {
