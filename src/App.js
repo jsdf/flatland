@@ -7,17 +7,21 @@ import ReactDOM from 'react-dom';
 
 import {
   useViewport,
-  useViewportControls,
   makeViewportState,
   ViewportStateSerializer,
+  DragPanBehavior,
+  WheelZoomBehavior,
 } from './viewport';
+
+import {BehaviorController, Behavior, useBehaviors} from './behavior';
+
 import {getMouseEventPos} from './mouseUtils';
 import Vector2 from './Vector2';
 import Rect from './Rect';
-import {range, scaleLinear} from './utils';
+import {range, scaleDiscreteQuantized} from './utils';
 
 import {getSelectionBox} from './selection';
-import useRefOnce from './useRefOnce';
+
 import useLocalStorageAsync from './useLocalStorageAsync';
 
 const {useEffect, useMemo, useRef, useState, useCallback} = React;
@@ -77,7 +81,7 @@ function useCanvasContext2d() {
   const [state, setState] = useState(null);
 
   useEffect(() => {
-    if (canvasRef.current && (!state || state.canvas != canvasRef.current)) {
+    if (canvasRef.current && (!state || state.canvas !== canvasRef.current)) {
       const ctx = canvasRef.current?.getContext('2d');
       setState({
         canvas: canvasRef.current,
@@ -86,10 +90,7 @@ function useCanvasContext2d() {
     }
   }, [state]);
 
-  return {
-    canvasRef,
-    ctx: state?.ctx,
-  };
+  return {canvasRef, ctx: state?.ctx, canvas: state?.canvas};
 }
 
 const initialEvents = [
@@ -97,7 +98,7 @@ const initialEvents = [
   {degree: 3, start: 4, duration: 1},
   {degree: 5, start: 5, duration: 2},
   {degree: 6, start: 6, duration: 3},
-];
+].map((ev, index) => ({...ev, id: index}));
 
 function drawRect(ctx, rect, attrs) {
   Object.assign(ctx, defaultStyle, attrs);
@@ -177,7 +178,7 @@ function useRenderableElement() {
   };
 }
 
-function getIntersectingEvent(point, drawnElements) {
+function getIntersectingDrawnEl(point, drawnElements) {
   let intersecting = null;
 
   // iterate in reverse to visit frontmost rects first
@@ -187,12 +188,20 @@ function getIntersectingEvent(point, drawnElements) {
     const intersection = drawnEl.rect.containsPoint(point);
     if (intersection) {
       // clicked on this rect
-      intersecting = drawnEl.object;
+      intersecting = drawnEl;
       break;
     }
   }
 
   return intersecting;
+}
+function getIntersectingEvent(point, drawnElements) {
+  let intersecting = getIntersectingDrawnEl(point, drawnElements);
+  if (intersecting) {
+    return intersecting.object;
+  }
+
+  return null;
 }
 
 function findIntersectingEvents(rect, drawnElements) {
@@ -211,62 +220,6 @@ function findIntersectingEvents(rect, drawnElements) {
   return intersecting;
 }
 
-function Tooltip({canvas, getEventAtPos}) {
-  const tooltip = useRenderableElement();
-
-  const onMouseMove = useCallback(
-    (e) => {
-      const mousePos = getMouseEventPos(e, canvas);
-
-      const intersecting = getEventAtPos(mousePos);
-
-      tooltip.render(
-        intersecting ? (
-          <div
-            style={{
-              transform: `translate3d(${mousePos.x + TOOLTIP_OFFSET}px,${
-                mousePos.y + TOOLTIP_OFFSET
-              }px,0)`,
-              backgroundColor: 'white',
-              pointerEvents: 'none',
-              width: 'fit-content',
-
-              userSelect: 'none',
-              fontSize: 10,
-              fontFamily: ' Lucida Grande',
-              padding: '2px 4px',
-              boxShadow: '3px 3px 5px rgba(0,0,0,0.4)',
-            }}
-          >
-            {JSON.stringify(intersecting)}
-          </div>
-        ) : null
-      );
-    },
-    [canvas]
-  );
-
-  useEffect(() => {
-    if (!canvas) return;
-
-    canvas.addEventListener('mousemove', onMouseMove);
-
-    return () => {
-      canvas.removeEventListener('mousemove', onMouseMove);
-    };
-  }, [canvas, onMouseMove]);
-
-  return (
-    <div
-      ref={tooltip.ref}
-      style={{
-        height: 0,
-        width: 0,
-      }}
-    />
-  );
-}
-
 const Controls = React.memo(function Controls({mode, onModeChange}) {
   return (
     <div
@@ -278,7 +231,7 @@ const Controls = React.memo(function Controls({mode, onModeChange}) {
         textAlign: 'right',
       }}
     >
-      {['select', 'hand'].map((value) => (
+      {['select', 'pan'].map((value) => (
         <button
           key={value}
           style={{
@@ -293,176 +246,136 @@ const Controls = React.memo(function Controls({mode, onModeChange}) {
   );
 });
 
-class DragEventBehavior {
-  dragging = false;
-  props = {};
-
-  setProps(props) {
-    this.props = props;
-  }
-
-  setEnabled(enabled) {
-    if (this.enabled === enabled) return;
-    this.dragging = false;
-    this.enabled = enabled;
-  }
-
-  bind(canvas) {
-    this.canvas = canvas;
-
-    this.canvas.addEventListener('mousedown', this.onMouseDown);
-    this.canvas.addEventListener('mouseup', this.onMouseUp);
-    this.canvas.addEventListener('mousemove', this.onMouseMove);
-    this.canvas.addEventListener('mouseout', this.onMouseOut);
-  }
-  unbind() {
-    if (!this.canvas) return;
-    this.canvas.removeEventListener('mousedown', this.onMouseDown);
-    this.canvas.removeEventListener('mouseup', this.onMouseUp);
-    this.canvas.removeEventListener('mousemove', this.onMouseMove);
-    this.canvas.removeEventListener('mouseout', this.onMouseOut);
-    this.canvas = null;
-  }
+class DragEventBehavior extends Behavior {
+  draggedEvents = [];
+  dragStartPos = new Vector2();
 
   onMouseDown = (e) => {
-    if (!this.enabled) return;
+    const mousePos = getMouseEventPos(e, this.canvas);
+    const draggedEvent = this.props.getEventAtPos(mousePos);
 
-    this.dragging = this.props.onDragStart?.(e);
+    if (draggedEvent) {
+      if (this.acquireLock('drag')) {
+        let draggedSelection = this.props.selection ?? new Set();
+        this.dragStartPos.copyFrom(mousePos);
+
+        if (!this.props.selection?.has(draggedEvent.id)) {
+          const newSelection = new Set([draggedEvent.id]);
+          draggedSelection = newSelection;
+          this.props.setSelection?.(newSelection);
+        }
+        // take a copy of the events at the time we started dragging
+        this.draggedEvents = [];
+        draggedSelection.forEach((id) =>
+          this.draggedEvents.push(this.props.eventsMap.get(id))
+        );
+      }
+    }
   };
 
   onMouseUp = (e) => {
-    if (!this.enabled) return;
-    this.dragging = false;
+    this.releaseLock('drag');
   };
 
   onMouseOut = (e) => {
-    if (!this.enabled) return;
-    this.dragging = false;
+    this.releaseLock('drag');
   };
 
   onMouseMove = (e) => {
-    if (!this.enabled) return;
-    if (!this.dragging) return;
+    if (!this.hasLock('drag')) return;
+    const mousePos = getMouseEventPos(e, this.canvas);
 
-    this.props.onDragMove?.(e);
+    this.props.onDragMove?.(this.draggedEvents, {
+      to: mousePos,
+      from: this.dragStartPos,
+    });
   };
+
+  getEventHandlers() {
+    return {
+      mousemove: this.onMouseMove,
+      mouseout: this.onMouseOut,
+      mouseup: this.onMouseUp,
+      mousedown: this.onMouseDown,
+    };
+  }
 }
 
-class SelectBoxBehavior {
+class SelectBoxBehavior extends Behavior {
   rect = new Rect();
   selectionStart = new Vector2();
   selectionEnd = new Vector2();
-  selecting = false;
 
-  constructor(selectionBox, onSelectRect) {
-    this.selectionBox = selectionBox;
-    this.onSelectRect = onSelectRect;
-  }
-
-  setEnabled(enabled) {
-    if (this.enabled === enabled) return;
-    if (!enabled) {
-      this.selectionBox.render(null);
-      this.selecting = false;
-    }
-    this.enabled = enabled;
-  }
-
-  bind(canvas) {
-    this.canvas = canvas;
-
-    this.canvas.addEventListener('mousedown', this.onMouseDown);
-    this.canvas.addEventListener('mouseup', this.onMouseUp);
-    this.canvas.addEventListener('mousemove', this.onMouseMove);
-    this.canvas.addEventListener('mouseout', this.onMouseOut);
-  }
-  unbind() {
-    if (!this.canvas) return;
-    this.canvas.removeEventListener('mousedown', this.onMouseDown);
-    this.canvas.removeEventListener('mouseup', this.onMouseUp);
-    this.canvas.removeEventListener('mousemove', this.onMouseMove);
-    this.canvas.removeEventListener('mouseout', this.onMouseOut);
-    this.canvas = null;
+  onDisabled() {
+    this.props.selectBox.render(null);
   }
 
   onMouseDown = (e) => {
-    if (!this.enabled) return;
-    this.selecting = true;
-    this.selectionStart.copyFrom(getMouseEventPos(e, this.canvas));
-    this.selectionEnd.copyFrom(this.selectionStart);
+    if (this.acquireLock('drag')) {
+      this.selectionStart.copyFrom(getMouseEventPos(e, this.canvas));
+      this.selectionEnd.copyFrom(this.selectionStart);
+    }
   };
 
   onMouseUp = (e) => {
-    if (!this.enabled) return;
-    this.selecting = false;
-    this.selectionBox.render(null);
+    if (!this.hasLock('drag')) return;
 
-    const selectionBoxRect = getSelectionBox(
+    this.releaseLock('drag');
+    this.props.selectBox.render(null);
+
+    const selectBoxRect = getSelectionBox(
       this.selectionStart,
       this.selectionEnd
     );
 
-    this.onSelectRect(selectionBoxRect);
+    this.props.onSelectRect?.(selectBoxRect);
   };
 
   onMouseOut = (e) => {
-    if (!this.enabled) return;
-    this.selecting = false;
-    this.selectionBox.render(null);
+    if (!this.hasLock('drag')) return;
+
+    this.releaseLock('drag');
+    this.props.selectBox.render(null);
   };
 
   onMouseMove = (e) => {
-    if (!this.selecting) return;
+    if (!this.hasLock('drag')) return;
 
     this.selectionEnd.copyFrom(getMouseEventPos(e, this.canvas));
 
-    const selectionBoxRect = getSelectionBox(
+    const selectBoxRect = getSelectionBox(
       this.selectionStart,
       this.selectionEnd
     );
 
-    this.selectionBox.render(
+    this.props.selectBox.render(
       <div
         style={{
-          transform: `translate3d(${selectionBoxRect.position.x}px,${selectionBoxRect.position.y}px,0)`,
+          transform: `translate3d(${selectBoxRect.position.x}px,${selectBoxRect.position.y}px,0)`,
           backgroundColor: 'white',
           opacity: 0.3,
           pointerEvents: 'none',
-          width: selectionBoxRect.size.x,
-          height: selectionBoxRect.size.y,
+          width: selectBoxRect.size.x,
+          height: selectBoxRect.size.y,
         }}
       />
     );
   };
+
+  getEventHandlers() {
+    return {
+      mousemove: this.onMouseMove,
+      mouseout: this.onMouseOut,
+      mouseup: this.onMouseUp,
+      mousedown: this.onMouseDown,
+    };
+  }
 }
 
-const SelectMode = React.memo(function SelectMode({
-  onSelectRect,
-  canvas,
-  enabled,
-}) {
-  const selectionBox = useRenderableElement();
-
-  const selectBoxBehaviorRef = useRefOnce(
-    () => new SelectBoxBehavior(selectionBox, onSelectRect)
-  );
-
-  useEffect(() => {
-    selectBoxBehaviorRef.current.setEnabled(enabled);
-  }, [enabled]);
-
-  useEffect(() => {
-    if (!canvas) return;
-    selectBoxBehaviorRef.current.bind(canvas);
-
-    return () => {
-      selectBoxBehaviorRef.current.unbind();
-    };
-  }, [canvas]);
-
+const SelectBox = React.memo(function SelectBox({selectBox}) {
   return (
     <div
-      ref={selectionBox.ref}
+      ref={selectBox.ref}
       style={{
         height: 0,
         width: 0,
@@ -471,17 +384,100 @@ const SelectMode = React.memo(function SelectMode({
   );
 });
 
+class TooltipBehavior extends Behavior {
+  onMouseMove = (e) => {
+    if (this.controller.lockExists('drag')) return;
+    const mousePos = getMouseEventPos(e, this.canvas);
+
+    const intersecting = this.props.getEventAtPos?.(mousePos);
+
+    this.props.tooltip?.render(
+      intersecting ? (
+        <div
+          style={{
+            transform: `translate3d(${mousePos.x + TOOLTIP_OFFSET}px,${
+              mousePos.y + TOOLTIP_OFFSET
+            }px,0)`,
+            backgroundColor: 'white',
+            pointerEvents: 'none',
+            width: 'fit-content',
+
+            userSelect: 'none',
+            fontSize: 10,
+            fontFamily: ' Lucida Grande',
+            padding: '2px 4px',
+            boxShadow: '3px 3px 5px rgba(0,0,0,0.4)',
+          }}
+        >
+          {JSON.stringify(intersecting)}
+        </div>
+      ) : null
+    );
+  };
+
+  onAnyLockChange(type, locked) {
+    if (type === 'drag' && locked) {
+      // hide tooltip
+      this.props.tooltip?.render(null);
+    }
+  }
+
+  getEventHandlers() {
+    return {mousemove: this.onMouseMove};
+  }
+}
+
+function Tooltip({tooltip}) {
+  return (
+    <div
+      ref={tooltip.ref}
+      style={{
+        height: 0,
+        width: 0,
+      }}
+    />
+  );
+}
+
 const LOCALSTORAGE_CONFIG = {
   baseKey: 'roygbiv',
   schemaVersion: '2',
 };
 
 function App() {
-  const {canvasRef, ctx} = useCanvasContext2d();
+  const {canvasRef, ctx, canvas} = useCanvasContext2d();
 
   const [events, setEvents] = useState(initialEvents);
+  const eventsMap = useMemo(() => new Map(events.map((ev) => [ev.id, ev])), [
+    events,
+  ]);
 
   const extents = useMemo(() => getExtents(events), [events]);
+
+  // map from pixels (unzoomed) to scale degrees
+  const quantizerY = useMemo(
+    () =>
+      scaleDiscreteQuantized(
+        [0, scaleDegrees.length * TIMELINE_ROW_HEIGHT], // continuous
+        [scaleDegrees[0], scaleDegrees[scaleDegrees.length - 1]], // discrete
+        {
+          stepSize: 1,
+        }
+      ),
+    []
+  );
+  // map from pixels (unzoomed) to quarter notes
+  const quantizerX = useMemo(
+    () =>
+      scaleDiscreteQuantized(
+        [0, QUARTER_NOTE_WIDTH], // continuous
+        [0, 1], // discrete
+        {
+          stepSize: 1,
+        }
+      ),
+    []
+  );
 
   const drawnElementsRef = useRef([]);
   const [selection, setSelection] = useState(new Set());
@@ -491,16 +487,6 @@ function App() {
     LOCALSTORAGE_CONFIG
   );
 
-  const onSelect = useCallback((e) => {
-    const mousePos = getMouseEventPos(e, canvasRef.current);
-    const intersecting = getIntersectingEvent(
-      mousePos,
-      drawnElementsRef.current
-    );
-
-    setSelection(new Set(intersecting ? [intersecting] : []));
-  }, []);
-
   const [viewportState, setViewportState] = useLocalStorageAsync(
     'viewportState',
     makeViewportState,
@@ -509,19 +495,110 @@ function App() {
       ...LOCALSTORAGE_CONFIG,
     }
   );
-  useViewportControls(canvasRef.current, {
-    wheelZoom: {x: true, y: false},
-    dragPan: mode === 'hand',
-    onSelect: mode !== 'select' ? onSelect : null,
-    viewportState,
-    setViewportState,
-  });
 
   const viewport = useViewport(viewportState);
+
+  const onDragMove = useCallback(
+    (draggedEvents, pos) => {
+      const delta = pos.to.clone().sub(pos.from);
+
+      const draggedEventsMap = new Map(draggedEvents.map((ev) => [ev.id, ev]));
+
+      setEvents((events) =>
+        events.map((ev) => {
+          if (draggedEventsMap.has(ev.id)) {
+            const deltaXQuantized = quantizerX.scale(
+              viewport.sizeXFromScreen(delta.x)
+            );
+            const deltaYQuantized = quantizerY.scale(
+              viewport.sizeYFromScreen(delta.y)
+            );
+            const eventBeforeDrag = draggedEventsMap.get(ev.id);
+            return {
+              ...ev,
+              // as the delta is since drag start, we need to use the copy of
+              // the event at drag start
+              start: eventBeforeDrag.start + deltaXQuantized,
+              degree: eventBeforeDrag.degree + deltaYQuantized,
+            };
+          }
+
+          return ev;
+        })
+      );
+    },
+    [viewport, quantizerX, quantizerY]
+  );
+
+  const onSelectRect = useCallback((selectBoxRect) => {
+    const intersecting = findIntersectingEvents(
+      selectBoxRect,
+      drawnElementsRef.current
+    );
+
+    setSelection(new Set(intersecting.map((ev) => ev.id)));
+  }, []);
+
+  const getEventAtPos = useCallback(
+    (pos) => getIntersectingEvent(pos, drawnElementsRef.current),
+    []
+  );
+
+  const selectBox = useRenderableElement();
+
+  const tooltip = useRenderableElement();
+
+  useBehaviors(
+    () => {
+      const controller = new BehaviorController();
+      controller.addBehavior('dragPan', DragPanBehavior, 1);
+      controller.addBehavior('wheelZoom', WheelZoomBehavior, 1);
+      controller.addBehavior('dragEvent', DragEventBehavior, 2);
+      controller.addBehavior('selection', SelectBoxBehavior, 1);
+      controller.addBehavior('tooltip', TooltipBehavior, 1);
+
+      return controller;
+    },
+    {
+      canvas,
+      props: {
+        dragPan: {
+          viewportState,
+          setViewportState,
+        },
+        wheelZoom: {
+          dimensions: {x: true},
+          viewportState,
+          setViewportState,
+        },
+        dragEvent: {
+          getEventAtPos,
+          onDragMove,
+          selection,
+          setSelection,
+          eventsMap,
+        },
+        selection: {
+          selectBox,
+          onSelectRect,
+        },
+        tooltip: {
+          getEventAtPos,
+          tooltip,
+        },
+      },
+      enabled: {
+        dragPan: mode === 'pan',
+        selection: mode === 'select',
+        dragEvent: mode === 'select',
+      },
+    }
+  );
 
   const windowDimensions = useWindowDimensions();
   const canvasLogicalDimensions = windowDimensions;
 
+  // rendering
   useEffect(() => {
     if (!ctx) return;
     const {canvas} = ctx;
@@ -584,7 +661,7 @@ function App() {
       });
       drawRect(ctx, rect, {
         fillStyle: colors[ev.degree],
-        strokeStyle: selection.has(ev) ? 'white' : null,
+        strokeStyle: selection.has(ev.id) ? 'white' : null,
       });
 
       drawnElementsRef.current.push({
@@ -592,64 +669,27 @@ function App() {
         object: ev,
       });
     });
-  }, [ctx, events, viewport, selection, canvasLogicalDimensions]);
-
-  const onDragStart = useCallback((e) => {
-    const mousePos = getMouseEventPos(e, canvasRef.current);
-    const intersecting = getIntersectingEvent(
-      mousePos,
-      drawnElementsRef.current
-    );
-
-    if (!intersecting) return false;
-
-    if (!selection.has(intersecting)) {
-      setSelection(new Set([intersecting]));
-    }
-
-    return true;
-  }, []);
-  const onDragMove = useCallback((e) => {
-    const mousePos = getMouseEventPos(e, canvasRef.current);
-    console.log('dragging to', mousePos);
-  }, []);
-
-  const dragEventBehaviorRef = useRef(new DragEventBehavior());
-  dragEventBehaviorRef.current.setEnabled(mode !== 'hand');
-  dragEventBehaviorRef.current.setProps({
-    onDragStart,
-    onDragMove,
-  });
-
-  const onSelectRect = useCallback((selectionBoxRect) => {
-    const intersecting = findIntersectingEvents(
-      selectionBoxRect,
-      drawnElementsRef.current
-    );
-
-    setSelection(new Set(intersecting));
-  }, []);
-
-  const getEventAtPos = useCallback(
-    (pos) => getIntersectingEvent(pos, drawnElementsRef.current),
-    []
-  );
+  }, [
+    ctx,
+    events,
+    viewport,
+    selection,
+    canvasLogicalDimensions,
+    extents.start,
+    extents.size,
+  ]);
 
   return (
     <div>
-      <SelectMode
-        enabled={mode === 'select'}
-        canvas={canvasRef.current}
-        onSelectRect={onSelectRect}
-      />
-      <Tooltip canvas={canvasRef.current} getEventAtPos={getEventAtPos} />
+      <SelectBox selectBox={selectBox} />
+      <Tooltip tooltip={tooltip} />
       <canvas
         ref={canvasRef}
         width={1000}
         height={600}
         style={{
           overflow: 'hidden',
-          // filter: 'invert(100%)',
+          cursor: mode === 'pan' ? 'grab' : null,
         }}
       />
       <Controls mode={mode} onModeChange={setMode} />
