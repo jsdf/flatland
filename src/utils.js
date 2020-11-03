@@ -72,10 +72,11 @@ export function scaleDiscreteQuantized(domain, range, options = {}) {
     scale(domainValue) {
       const rangeValue = linear.scale(domainValue);
 
+      const round = options.round ?? Math.floor;
+
       return (
         range[0] +
-        Math.floor((rangeValue - range[0]) / options.stepSize) *
-          options.stepSize
+        round((rangeValue - range[0]) / options.stepSize) * options.stepSize
       );
     },
     invert(rangeValue) {

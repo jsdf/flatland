@@ -9,16 +9,11 @@ const {useMemo, useState} = React;
 
 const SELECT_MAX_MOVE_DISTANCE = 5;
 
-function zoomAtPoint(
+export function zoomAtPoint(
   {zoom: prevZoom, pan: prevPan},
   pointInView,
-  zoomScaleFactor
+  updatedZoom
 ) {
-  const updatedZoom = prevZoom
-    .clone()
-    .mul({x: zoomScaleFactor, y: zoomScaleFactor});
-  // updatedZoom.y = 1; // lock zoom to x axis
-
   // find where the point is in (unzoomed) world coords
   const pointWorld = pointInView.clone().div(prevZoom).add(prevPan);
   // find point (zoomed) coords at new zoom, subtract point viewport offset
@@ -95,6 +90,31 @@ export class DragPanBehavior extends Behavior {
   }
 }
 
+export class WheelScrollBehavior extends Behavior {
+  onwheel = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    let deltaY = e.deltaY;
+    // is zoom in pixels or lines?
+    if (e.deltaMode > 0) deltaY *= 100;
+    let deltaX = e.deltaX;
+
+    this.props.setViewportState?.((s) => {
+      return {
+        ...s,
+        pan: s.pan.clone().add(new Vector2({x: deltaX, y: deltaY}).div(s.zoom)),
+      };
+    });
+  };
+
+  getEventHandlers() {
+    return {
+      wheel: this.onwheel,
+    };
+  }
+}
+
 export class WheelZoomBehavior extends Behavior {
   onwheel = (e) => {
     e.preventDefault();
@@ -113,7 +133,10 @@ export class WheelZoomBehavior extends Behavior {
     const zoomScaleFactor = 1 + zoomSpeed * -deltaY;
 
     this.props.setViewportState?.((s) => {
-      const updated = zoomAtPoint(s, mousePosInView, zoomScaleFactor);
+      const updatedZoom = s.zoom
+        .clone()
+        .mul({x: zoomScaleFactor, y: zoomScaleFactor});
+      const updated = zoomAtPoint(s, mousePosInView, updatedZoom);
 
       if (this.props?.dimensions?.x !== true) {
         updated.zoom.x = s.zoom.x;

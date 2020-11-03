@@ -11,6 +11,8 @@ import {
   ViewportStateSerializer,
   DragPanBehavior,
   WheelZoomBehavior,
+  WheelScrollBehavior,
+  zoomAtPoint,
 } from './viewport';
 
 import {BehaviorController, Behavior, useBehaviors} from './behavior';
@@ -35,6 +37,10 @@ const colors = [
   '#6c3fd8', // i
   '#bb71ff', // v
 ];
+
+function wrap(value, max) {
+  return ((value % max) + max) % max;
+}
 
 const TIMELINE_ROW_HEIGHT = 20;
 const QUARTER_NOTE_WIDTH = 10;
@@ -148,8 +154,13 @@ function getExtents(events) {
       start: 0,
       end: 0,
       size: 0,
+      minDegree: 0,
+      maxDegree: 7,
     };
   }
+
+  const minDegree = events.reduce((acc, ev) => Math.min(acc, ev.degree), 0);
+  const maxDegree = events.reduce((acc, ev) => Math.max(acc, ev.degree), 7);
 
   const start = events.reduce((acc, ev) => Math.min(acc, ev.start), Infinity);
   const end = events.reduce(
@@ -160,6 +171,8 @@ function getExtents(events) {
     start,
     end,
     size: end - start,
+    minDegree,
+    maxDegree,
   };
 }
 
@@ -220,12 +233,18 @@ function findIntersectingEvents(rect, drawnElements) {
   return intersecting;
 }
 
-const Controls = React.memo(function Controls({mode, onModeChange}) {
+const Controls = React.memo(function Controls({
+  mode,
+  onModeChange,
+  viewportState,
+  onViewportStateChange,
+  canvasLogicalDimensions,
+}) {
   return (
     <div
       style={{
         position: 'absolute',
-        width: 300,
+        width: '50vw',
         top: 0,
         right: 0,
         textAlign: 'right',
@@ -242,6 +261,52 @@ const Controls = React.memo(function Controls({mode, onModeChange}) {
           {value}
         </button>
       ))}
+      <label style={{fontSize: 24}}>
+        ⬌
+        <input
+          type="range"
+          value={viewportState.zoom.x}
+          min={0.5}
+          max={10}
+          step={0.01}
+          onChange={(e) =>
+            onViewportStateChange((s) => {
+              const updatedZoom = s.zoom.clone();
+              updatedZoom.x = parseFloat(e.currentTarget.value);
+
+              const zoomPos = new Vector2({
+                x: canvasLogicalDimensions.width / 2,
+                y: canvasLogicalDimensions.height / 2,
+              });
+
+              return zoomAtPoint(s, zoomPos, updatedZoom);
+            })
+          }
+        />
+      </label>
+      <label style={{fontSize: 24}}>
+        ⬍
+        <input
+          type="range"
+          value={viewportState.zoom.y}
+          min={0.5}
+          max={10}
+          step={0.01}
+          onChange={(e) =>
+            onViewportStateChange((s) => {
+              const updatedZoom = s.zoom.clone();
+              updatedZoom.y = parseFloat(e.currentTarget.value);
+
+              const zoomPos = new Vector2({
+                x: canvasLogicalDimensions.width / 2,
+                y: canvasLogicalDimensions.height / 2,
+              });
+
+              return zoomAtPoint(s, zoomPos, updatedZoom);
+            })
+          }
+        />
+      </label>
     </div>
   );
 });
@@ -294,7 +359,7 @@ class DragEventBehavior extends Behavior {
   getEventHandlers() {
     return {
       mousemove: this.onMouseMove,
-      mouseout: this.onMouseOut,
+      // mouseout: this.onMouseOut,
       mouseup: this.onMouseUp,
       mousedown: this.onMouseDown,
     };
@@ -462,6 +527,7 @@ function App() {
         [scaleDegrees[0], scaleDegrees[scaleDegrees.length - 1]], // discrete
         {
           stepSize: 1,
+          round: Math.round,
         }
       ),
     []
@@ -474,6 +540,7 @@ function App() {
         [0, 1], // discrete
         {
           stepSize: 1,
+          round: Math.round,
         }
       ),
     []
@@ -553,6 +620,8 @@ function App() {
       const controller = new BehaviorController();
       controller.addBehavior('dragPan', DragPanBehavior, 1);
       controller.addBehavior('wheelZoom', WheelZoomBehavior, 1);
+      controller.addBehavior('wheelScroll', WheelScrollBehavior, 1);
+
       controller.addBehavior('dragEvent', DragEventBehavior, 2);
       controller.addBehavior('selection', SelectBoxBehavior, 1);
       controller.addBehavior('tooltip', TooltipBehavior, 1);
@@ -568,6 +637,10 @@ function App() {
         },
         wheelZoom: {
           dimensions: {x: true},
+          viewportState,
+          setViewportState,
+        },
+        wheelScroll: {
           viewportState,
           setViewportState,
         },
@@ -589,6 +662,8 @@ function App() {
       },
       enabled: {
         dragPan: mode === 'pan',
+        wheelZoom: mode === 'pan',
+        wheelScroll: mode !== 'pan',
         selection: mode === 'select',
         dragEvent: mode === 'select',
       },
@@ -616,7 +691,7 @@ function App() {
 
     drawnElementsRef.current = [];
 
-    scaleDegrees.forEach((i) => {
+    for (let i = extents.minDegree; i <= extents.maxDegree; i++) {
       const rect = new Rect({
         position: viewport.positionToScreen({
           x: 0,
@@ -633,7 +708,7 @@ function App() {
 
       ctx.globalAlpha = 0.2;
       drawRect(ctx, rect, {
-        fillStyle: colors[i],
+        fillStyle: colors[wrap(i, colors.length)],
       });
       ctx.globalAlpha = 1;
 
@@ -642,11 +717,11 @@ function App() {
         String(i + 1),
         rect,
         {
-          fillStyle: colors[i],
+          fillStyle: colors[wrap(i, colors.length)],
         },
         {offset: {x: 3, y: 14}}
       );
-    });
+    }
 
     events.forEach((ev) => {
       const rect = new Rect({
@@ -660,7 +735,7 @@ function App() {
         }),
       });
       drawRect(ctx, rect, {
-        fillStyle: colors[ev.degree],
+        fillStyle: colors[wrap(ev.degree, colors.length)],
         strokeStyle: selection.has(ev.id) ? 'white' : null,
       });
 
@@ -677,6 +752,8 @@ function App() {
     canvasLogicalDimensions,
     extents.start,
     extents.size,
+    extents.minDegree,
+    extents.maxDegree,
   ]);
 
   return (
@@ -692,7 +769,13 @@ function App() {
           cursor: mode === 'pan' ? 'grab' : null,
         }}
       />
-      <Controls mode={mode} onModeChange={setMode} />
+      <Controls
+        mode={mode}
+        onModeChange={setMode}
+        viewportState={viewportState}
+        onViewportStateChange={setViewportState}
+        canvasLogicalDimensions={canvasLogicalDimensions}
+      />
     </div>
   );
 }
