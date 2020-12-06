@@ -1,7 +1,5 @@
 import './App.css';
 
-import debounce from 'debounce';
-
 import React from 'react';
 import ReactDOM from 'react-dom';
 
@@ -15,18 +13,35 @@ import {
   zoomAtPoint,
 } from './viewport';
 
+import {useCanvasContext2d, drawRect, drawTextRect} from './canvasUtils';
+
+import {getIntersectingEvent, findIntersectingEvents} from './renderableRect';
+
+import {useWindowDimensions, getDPR} from './windowUtils';
+
 import {BehaviorController, Behavior, useBehaviors} from './behavior';
 
-import {getMouseEventPos} from './mouseUtils';
 import Vector2 from './Vector2';
 import Rect from './Rect';
 import {range, scaleDiscreteQuantized} from './utils';
 
-import {getSelectionBox} from './selection';
+import {DragEventBehavior, SelectBoxBehavior, SelectBox} from './selection';
 
 import useLocalStorageAsync from './useLocalStorageAsync';
+import Controls from './Controls';
+import {TooltipBehavior, Tooltip} from './Tooltip';
 
-const {useEffect, useMemo, useRef, useState, useCallback} = React;
+import {wrap} from './mathUtils';
+
+const {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useCallback,
+  useImperativeHandle,
+  forwardRef,
+} = React;
 
 const colors = [
   '#ff1e47', // r
@@ -38,66 +53,10 @@ const colors = [
   '#bb71ff', // v
 ];
 
-function wrap(value, max) {
-  return ((value % max) + max) % max;
-}
-
 const TIMELINE_ROW_HEIGHT = 20;
 const QUARTER_NOTE_WIDTH = 10;
-const TOOLTIP_OFFSET = 8;
-
-const defaultStyle = {
-  strokeStyle: 'transparent',
-  fillStyle: 'transparent',
-};
-
-const defaultTextStyle = {
-  font: '12px Lucida Grande',
-};
 
 const scaleDegrees = range(7);
-
-function useWindowDimensions() {
-  const [windowDimensions, setWindowDimensions] = useState({
-    width: window.innerWidth,
-    height: window.innerHeight,
-  });
-
-  useEffect(() => {
-    window.addEventListener(
-      'resize',
-      debounce(() => {
-        setWindowDimensions({
-          width: window.innerWidth,
-          height: window.innerHeight,
-        });
-      }, 300)
-    );
-  }, []);
-
-  return windowDimensions;
-}
-
-function getDPR() {
-  return window.devicePixelRatio || 1;
-}
-
-function useCanvasContext2d() {
-  const canvasRef = useRef(null);
-  const [state, setState] = useState(null);
-
-  useEffect(() => {
-    if (canvasRef.current && (!state || state.canvas !== canvasRef.current)) {
-      const ctx = canvasRef.current?.getContext('2d');
-      setState({
-        canvas: canvasRef.current,
-        ctx,
-      });
-    }
-  }, [state]);
-
-  return {canvasRef, ctx: state?.ctx, canvas: state?.canvas};
-}
 
 const initialEvents = [
   {degree: 0, start: 0, duration: 1},
@@ -106,48 +65,6 @@ const initialEvents = [
   {degree: 6, start: 6, duration: 3},
 ].map((ev, index) => ({...ev, id: index}));
 
-function drawRect(ctx, rect, attrs) {
-  Object.assign(ctx, defaultStyle, attrs);
-
-  if (attrs.fillStyle) {
-    ctx.fillRect(
-      Math.floor(rect.position.x),
-      Math.floor(rect.position.y),
-      Math.floor(rect.size.x),
-      Math.floor(rect.size.y)
-    );
-  }
-  if (attrs.strokeStyle) {
-    ctx.strokeRect(
-      Math.floor(rect.position.x),
-      Math.floor(rect.position.y),
-      Math.max(Math.floor(rect.size.x - 1), 0),
-      Math.max(Math.floor(rect.size.y - 1, 0))
-    );
-  }
-}
-
-function drawTextRect(ctx, text, rect, attrs, props) {
-  ctx.save();
-  Object.assign(ctx, defaultTextStyle, attrs);
-
-  ctx.rect(
-    Math.floor(rect.position.x),
-    Math.floor(rect.position.y),
-    Math.floor(rect.size.x),
-    Math.floor(rect.size.y)
-  );
-  ctx.clip();
-
-  ctx.fillText(
-    text,
-    Math.floor(rect.position.x + (props?.offset?.x ?? 0)),
-    Math.floor(rect.position.y + (props?.offset?.y ?? 0))
-  );
-
-  ctx.restore();
-}
-
 function getExtents(events) {
   if (events.length === 0) {
     return {
@@ -155,12 +72,15 @@ function getExtents(events) {
       end: 0,
       size: 0,
       minDegree: 0,
-      maxDegree: 7,
+      maxDegree: scaleDegrees.length - 1,
     };
   }
 
   const minDegree = events.reduce((acc, ev) => Math.min(acc, ev.degree), 0);
-  const maxDegree = events.reduce((acc, ev) => Math.max(acc, ev.degree), 7);
+  const maxDegree = events.reduce(
+    (acc, ev) => Math.max(acc, ev.degree),
+    scaleDegrees.length - 1
+  );
 
   const start = events.reduce((acc, ev) => Math.min(acc, ev.start), Infinity);
   const end = events.reduce(
@@ -176,338 +96,14 @@ function getExtents(events) {
   };
 }
 
-function useRenderableElement() {
-  const ref = useRef(null);
-
-  const render = useCallback(function render(element) {
-    if (!ref.current) return;
-
-    ReactDOM.render(element, ref.current);
-  }, []);
-
-  return {
-    ref,
-    render,
-  };
-}
-
-function getIntersectingDrawnEl(point, drawnElements) {
-  let intersecting = null;
-
-  // iterate in reverse to visit frontmost rects first
-  for (var i = drawnElements.length - 1; i >= 0; i--) {
-    const drawnEl = drawnElements[i];
-
-    const intersection = drawnEl.rect.containsPoint(point);
-    if (intersection) {
-      // clicked on this rect
-      intersecting = drawnEl;
-      break;
-    }
-  }
-
-  return intersecting;
-}
-function getIntersectingEvent(point, drawnElements) {
-  let intersecting = getIntersectingDrawnEl(point, drawnElements);
-  if (intersecting) {
-    return intersecting.object;
-  }
-
-  return null;
-}
-
-function findIntersectingEvents(rect, drawnElements) {
-  let intersecting = [];
-  // iterate in reverse to visit frontmost rects first
-  for (var i = drawnElements.length - 1; i >= 0; i--) {
-    const drawnEl = drawnElements[i];
-
-    const intersection = drawnEl.rect.intersectsRect(rect);
-    if (intersection) {
-      // clicked on this rect
-      intersecting.push(drawnEl.object);
-    }
-  }
-
-  return intersecting;
-}
-
-const Controls = React.memo(function Controls({
-  mode,
-  onModeChange,
-  viewportState,
-  onViewportStateChange,
-  canvasLogicalDimensions,
-}) {
-  return (
-    <div
-      style={{
-        position: 'absolute',
-        width: '50vw',
-        top: 0,
-        right: 0,
-        textAlign: 'right',
-      }}
-    >
-      {['select', 'pan'].map((value) => (
-        <button
-          key={value}
-          style={{
-            background: value === mode ? '#fff' : '#ccc',
-          }}
-          onClick={() => onModeChange(value)}
-        >
-          {value}
-        </button>
-      ))}
-      <label style={{fontSize: 24}}>
-        ⬌
-        <input
-          type="range"
-          value={viewportState.zoom.x}
-          min={0.5}
-          max={10}
-          step={0.01}
-          onChange={(e) =>
-            onViewportStateChange((s) => {
-              const updatedZoom = s.zoom.clone();
-              updatedZoom.x = parseFloat(e.currentTarget.value);
-
-              const zoomPos = new Vector2({
-                x: canvasLogicalDimensions.width / 2,
-                y: canvasLogicalDimensions.height / 2,
-              });
-
-              return zoomAtPoint(s, zoomPos, updatedZoom);
-            })
-          }
-        />
-      </label>
-      <label style={{fontSize: 24}}>
-        ⬍
-        <input
-          type="range"
-          value={viewportState.zoom.y}
-          min={0.5}
-          max={10}
-          step={0.01}
-          onChange={(e) =>
-            onViewportStateChange((s) => {
-              const updatedZoom = s.zoom.clone();
-              updatedZoom.y = parseFloat(e.currentTarget.value);
-
-              const zoomPos = new Vector2({
-                x: canvasLogicalDimensions.width / 2,
-                y: canvasLogicalDimensions.height / 2,
-              });
-
-              return zoomAtPoint(s, zoomPos, updatedZoom);
-            })
-          }
-        />
-      </label>
-    </div>
-  );
-});
-
-class DragEventBehavior extends Behavior {
-  draggedEvents = [];
-  dragStartPos = new Vector2();
-
-  onMouseDown = (e) => {
-    const mousePos = getMouseEventPos(e, this.canvas);
-    const draggedEvent = this.props.getEventAtPos(mousePos);
-
-    if (draggedEvent) {
-      if (this.acquireLock('drag')) {
-        let draggedSelection = this.props.selection ?? new Set();
-        this.dragStartPos.copyFrom(mousePos);
-
-        if (!this.props.selection?.has(draggedEvent.id)) {
-          const newSelection = new Set([draggedEvent.id]);
-          draggedSelection = newSelection;
-          this.props.setSelection?.(newSelection);
-        }
-        // take a copy of the events at the time we started dragging
-        this.draggedEvents = [];
-        draggedSelection.forEach((id) =>
-          this.draggedEvents.push(this.props.eventsMap.get(id))
-        );
-      }
-    }
-  };
-
-  onMouseUp = (e) => {
-    this.releaseLock('drag');
-  };
-
-  onMouseOut = (e) => {
-    this.releaseLock('drag');
-  };
-
-  onMouseMove = (e) => {
-    if (!this.hasLock('drag')) return;
-    const mousePos = getMouseEventPos(e, this.canvas);
-
-    this.props.onDragMove?.(this.draggedEvents, {
-      to: mousePos,
-      from: this.dragStartPos,
-    });
-  };
-
-  getEventHandlers() {
-    return {
-      mousemove: this.onMouseMove,
-      // mouseout: this.onMouseOut,
-      mouseup: this.onMouseUp,
-      mousedown: this.onMouseDown,
-    };
-  }
-}
-
-class SelectBoxBehavior extends Behavior {
-  rect = new Rect();
-  selectionStart = new Vector2();
-  selectionEnd = new Vector2();
-
-  onDisabled() {
-    this.props.selectBox.render(null);
-  }
-
-  onMouseDown = (e) => {
-    if (this.acquireLock('drag')) {
-      this.selectionStart.copyFrom(getMouseEventPos(e, this.canvas));
-      this.selectionEnd.copyFrom(this.selectionStart);
-    }
-  };
-
-  onMouseUp = (e) => {
-    if (!this.hasLock('drag')) return;
-
-    this.releaseLock('drag');
-    this.props.selectBox.render(null);
-
-    const selectBoxRect = getSelectionBox(
-      this.selectionStart,
-      this.selectionEnd
-    );
-
-    this.props.onSelectRect?.(selectBoxRect);
-  };
-
-  onMouseOut = (e) => {
-    if (!this.hasLock('drag')) return;
-
-    this.releaseLock('drag');
-    this.props.selectBox.render(null);
-  };
-
-  onMouseMove = (e) => {
-    if (!this.hasLock('drag')) return;
-
-    this.selectionEnd.copyFrom(getMouseEventPos(e, this.canvas));
-
-    const selectBoxRect = getSelectionBox(
-      this.selectionStart,
-      this.selectionEnd
-    );
-
-    this.props.selectBox.render(
-      <div
-        style={{
-          transform: `translate3d(${selectBoxRect.position.x}px,${selectBoxRect.position.y}px,0)`,
-          backgroundColor: 'white',
-          opacity: 0.3,
-          pointerEvents: 'none',
-          width: selectBoxRect.size.x,
-          height: selectBoxRect.size.y,
-        }}
-      />
-    );
-  };
-
-  getEventHandlers() {
-    return {
-      mousemove: this.onMouseMove,
-      mouseout: this.onMouseOut,
-      mouseup: this.onMouseUp,
-      mousedown: this.onMouseDown,
-    };
-  }
-}
-
-const SelectBox = React.memo(function SelectBox({selectBox}) {
-  return (
-    <div
-      ref={selectBox.ref}
-      style={{
-        height: 0,
-        width: 0,
-      }}
-    />
-  );
-});
-
-class TooltipBehavior extends Behavior {
-  onMouseMove = (e) => {
-    if (this.controller.lockExists('drag')) return;
-    const mousePos = getMouseEventPos(e, this.canvas);
-
-    const intersecting = this.props.getEventAtPos?.(mousePos);
-
-    this.props.tooltip?.render(
-      intersecting ? (
-        <div
-          style={{
-            transform: `translate3d(${mousePos.x + TOOLTIP_OFFSET}px,${
-              mousePos.y + TOOLTIP_OFFSET
-            }px,0)`,
-            backgroundColor: 'white',
-            pointerEvents: 'none',
-            width: 'fit-content',
-
-            userSelect: 'none',
-            fontSize: 10,
-            fontFamily: ' Lucida Grande',
-            padding: '2px 4px',
-            boxShadow: '3px 3px 5px rgba(0,0,0,0.4)',
-          }}
-        >
-          {JSON.stringify(intersecting)}
-        </div>
-      ) : null
-    );
-  };
-
-  onAnyLockChange(type, locked) {
-    if (type === 'drag' && locked) {
-      // hide tooltip
-      this.props.tooltip?.render(null);
-    }
-  }
-
-  getEventHandlers() {
-    return {mousemove: this.onMouseMove};
-  }
-}
-
-function Tooltip({tooltip}) {
-  return (
-    <div
-      ref={tooltip.ref}
-      style={{
-        height: 0,
-        width: 0,
-      }}
-    />
-  );
-}
-
 const LOCALSTORAGE_CONFIG = {
   baseKey: 'roygbiv',
   schemaVersion: '2',
 };
+
+function TooltipContent({event}) {
+  return JSON.stringify(event);
+}
 
 function App() {
   const {canvasRef, ctx, canvas} = useCanvasContext2d();
@@ -523,7 +119,7 @@ function App() {
   const quantizerY = useMemo(
     () =>
       scaleDiscreteQuantized(
-        [0, scaleDegrees.length * TIMELINE_ROW_HEIGHT], // continuous
+        [0, (scaleDegrees.length - 1) * TIMELINE_ROW_HEIGHT], // continuous
         [scaleDegrees[0], scaleDegrees[scaleDegrees.length - 1]], // discrete
         {
           stepSize: 1,
@@ -546,7 +142,7 @@ function App() {
     []
   );
 
-  const drawnElementsRef = useRef([]);
+  const renderedRectsRef = useRef([]);
   const [selection, setSelection] = useState(new Set());
   const [mode, setMode] = useLocalStorageAsync(
     'mode',
@@ -600,20 +196,20 @@ function App() {
   const onSelectRect = useCallback((selectBoxRect) => {
     const intersecting = findIntersectingEvents(
       selectBoxRect,
-      drawnElementsRef.current
+      renderedRectsRef.current
     );
 
     setSelection(new Set(intersecting.map((ev) => ev.id)));
   }, []);
 
   const getEventAtPos = useCallback(
-    (pos) => getIntersectingEvent(pos, drawnElementsRef.current),
+    (pos) => getIntersectingEvent(pos, renderedRectsRef.current),
     []
   );
 
-  const selectBox = useRenderableElement();
+  const selectBoxRef = useRef(null);
 
-  const tooltip = useRenderableElement();
+  const tooltipRef = useRef(null);
 
   useBehaviors(
     () => {
@@ -652,12 +248,12 @@ function App() {
           eventsMap,
         },
         selection: {
-          selectBox,
+          setSelectBoxRect: selectBoxRef.current?.setSelectBoxRect,
           onSelectRect,
         },
         tooltip: {
           getEventAtPos,
-          tooltip,
+          setTooltip: tooltipRef.current?.setTooltip,
         },
       },
       enabled: {
@@ -689,7 +285,7 @@ function App() {
     // don't have to worry about the difference.
     ctx.scale(dpr, dpr);
 
-    drawnElementsRef.current = [];
+    renderedRectsRef.current = [];
 
     for (let i = extents.minDegree; i <= extents.maxDegree; i++) {
       const rect = new Rect({
@@ -726,8 +322,8 @@ function App() {
     events.forEach((ev) => {
       const rect = new Rect({
         position: viewport.positionToScreen({
-          x: ev.start * QUARTER_NOTE_WIDTH,
-          y: ev.degree * TIMELINE_ROW_HEIGHT,
+          x: quantizerX.invert(ev.start),
+          y: quantizerY.invert(ev.degree),
         }),
         size: viewport.sizeToScreen({
           x: ev.duration * QUARTER_NOTE_WIDTH,
@@ -739,7 +335,7 @@ function App() {
         strokeStyle: selection.has(ev.id) ? 'white' : null,
       });
 
-      drawnElementsRef.current.push({
+      renderedRectsRef.current.push({
         rect,
         object: ev,
       });
@@ -754,12 +350,14 @@ function App() {
     extents.size,
     extents.minDegree,
     extents.maxDegree,
+    quantizerX,
+    quantizerY,
   ]);
 
   return (
     <div>
-      <SelectBox selectBox={selectBox} />
-      <Tooltip tooltip={tooltip} />
+      <SelectBox ref={selectBoxRef} />
+      <Tooltip ref={tooltipRef} component={TooltipContent} />
       <canvas
         ref={canvasRef}
         width={1000}
