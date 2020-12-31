@@ -45,6 +45,13 @@ export class DragEventBehavior extends Behavior {
   };
 
   onMouseUp = (e) => {
+    if (!this.hasLock('drag')) return;
+    const mousePos = getMouseEventPos(e, this.canvas);
+
+    this.props.onDragComplete?.(this.draggedEvents, {
+      to: mousePos,
+      from: this.dragStartPos,
+    });
     this.releaseLock('drag');
   };
 

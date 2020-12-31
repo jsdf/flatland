@@ -42,7 +42,7 @@ const Controls = React.memo(function Controls({
           onChange={(e) =>
             onViewportStateChange((s) => {
               const updatedZoom = s.zoom.clone();
-              updatedZoom.x = parseFloat(e.currentTarget.value);
+              updatedZoom.x = parseFloat(e.target.value);
 
               const zoomPos = new Vector2({
                 x: canvasLogicalDimensions.width / 2,
@@ -65,7 +65,7 @@ const Controls = React.memo(function Controls({
           onChange={(e) =>
             onViewportStateChange((s) => {
               const updatedZoom = s.zoom.clone();
-              updatedZoom.y = parseFloat(e.currentTarget.value);
+              updatedZoom.y = parseFloat(e.target.value);
 
               const zoomPos = new Vector2({
                 x: canvasLogicalDimensions.width / 2,
