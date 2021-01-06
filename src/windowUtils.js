@@ -1,7 +1,17 @@
 import React from 'react';
-import debounce from 'debounce';
 
 const {useEffect, useState} = React;
+
+function debounce(fn, delay) {
+  let timer;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      fn(...args);
+    }, delay);
+  };
+}
 
 export function useWindowDimensions() {
   const [windowDimensions, setWindowDimensions] = useState({
