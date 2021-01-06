@@ -64,6 +64,14 @@ export function scaleDiscreteArbitrary(domain, range, options = {}) {
 export function scaleDiscreteQuantized(domain, range, options = {}) {
   const linear = scaleLinear(domain, range, options);
 
+  let aliases = null;
+  if (options.alias) {
+    aliases = {
+      [options.alias.domain]: 'domain',
+      [options.alias.range]: 'range',
+    };
+  }
+
   if (options.stepSize == null) {
     throw new Error('stepSize option is required');
   }
@@ -81,6 +89,16 @@ export function scaleDiscreteQuantized(domain, range, options = {}) {
     },
     invert(rangeValue) {
       return linear.invert(rangeValue);
+    },
+    to(type, value) {
+      if (!aliases || !(type in aliases)) {
+        throw new Error(`can't use to() without alias option`);
+      }
+      if (aliases[type] == 'domain') {
+        return this.invert(value);
+      } else {
+        return this.scale(value);
+      }
     },
   };
 }
