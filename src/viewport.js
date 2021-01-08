@@ -49,17 +49,17 @@ export class DragPanBehavior extends Behavior {
   };
 
   onmousemove = (e) => {
-    if (!this.hasLock('drag')) return;
-
-    const distanceMoved = getMouseEventPos(e, this.canvas).distanceTo(
-      this.startMousePos
-    );
-    if (distanceMoved > SELECT_MAX_MOVE_DISTANCE) {
-      // now we know for sure we're dragging
-      this.controller.acquireLock('drag', this, this.priority);
+    if (this.isMouseDown && !this.hasLock('drag')) {
+      const distanceMoved = getMouseEventPos(e, this.canvas).distanceTo(
+        this.startMousePos
+      );
+      if (distanceMoved > SELECT_MAX_MOVE_DISTANCE) {
+        // now we know for sure we're dragging
+        this.controller.acquireLock('drag', this, this.priority);
+      }
     }
 
-    if (this.isMouseDown && this.controller.hasLock('drag', this)) {
+    if (this.hasLock('drag')) {
       const movementSinceStart = getMouseEventPos(e, this.canvas).sub(
         this.startMousePos
       );
