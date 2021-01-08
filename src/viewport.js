@@ -49,6 +49,8 @@ export class DragPanBehavior extends Behavior {
   };
 
   onmousemove = (e) => {
+    if (!this.hasLock('drag')) return;
+
     const distanceMoved = getMouseEventPos(e, this.canvas).distanceTo(
       this.startMousePos
     );
