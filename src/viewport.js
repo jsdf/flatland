@@ -1,7 +1,9 @@
 import React from 'react';
 
 import Vector2 from './Vector2';
+import AABB from './AABB';
 import {getMouseEventPos} from './mouseUtils';
+import {clamp} from './mathUtils';
 
 import {Behavior} from './behavior';
 
@@ -138,7 +140,13 @@ export class WheelZoomBehavior extends Behavior {
       const updatedZoom = s.zoom
         .clone()
         .mul({x: zoomScaleFactor, y: zoomScaleFactor});
-      const updated = zoomAtPoint(s, mousePosInView, updatedZoom);
+      const updated = zoomInAtPointClamped(
+        s,
+        mousePosInView,
+        updatedZoom,
+        this.props.minZoom,
+        this.props.maxZoom
+      );
 
       if (this.props?.dimensions?.x !== true) {
         updated.zoom.x = s.zoom.x;
@@ -163,11 +171,42 @@ export class WheelZoomBehavior extends Behavior {
   }
 }
 
+export function zoomInAtPointClamped(
+  viewportState,
+  pointInView,
+  minZoom = new Vector2({x: 0, y: 0}),
+  maxZoom = new Vector2({x: Infinity, y: Infinity})
+) {
+  const updatedZoom = new Vector2({
+    x: clamp(viewportState.zoom.x, minZoom.x, maxZoom.x),
+    y: clamp(viewportState.zoom.y, minZoom.y, maxZoom.y),
+  });
+
+  return zoomAtPoint(viewportState, pointInView, updatedZoom);
+}
+
 export function makeViewportState() {
   return {
+    // zoom represents the magnification factor eg. zoom: 2 will draw at 2x size
+    // (so a rect would have 2x dimensions in pixels, for example).
     zoom: new Vector2({x: 1, y: 1}),
+    // pan represents the offset to the view at 1x zoom
+    // when adjusting the pan you need to take the zoom into account
     pan: new Vector2(),
   };
+}
+
+export function makeViewportStateFromExtents(extents, viewportDimensions) {
+  const viewportDimensionsVec = new Vector2({
+    x: viewportDimensions.width,
+    y: viewportDimensions.height,
+  });
+  const aabb = new AABB(extents);
+  // 1/size gives zoom level to exactly contain that size
+  const zoom = viewportDimensionsVec.div(aabb.size());
+  const pan = new Vector2(extents.min);
+
+  return {zoom, pan};
 }
 
 export const ViewportStateSerializer = {
@@ -188,30 +227,34 @@ export function useViewportState() {
   return useState(makeViewportState);
 }
 
+// converts between 'world' (unzoomed/panned) and 'screen' (panned and zoomed) coords
+export class ViewportTransformer {
+  constructor({zoom, pan}) {
+    this.zoom = zoom;
+    this.pan = pan;
+  }
+  sizeToScreen(size) {
+    // just scale
+    return new Vector2(size).mul(this.zoom);
+  }
+  sizeFromScreen(screenSize) {
+    return new Vector2(screenSize).div(this.zoom);
+  }
+  sizeXFromScreen(screenSizeX) {
+    return screenSizeX / this.zoom.x;
+  }
+  sizeYFromScreen(screenSizeY) {
+    return screenSizeY / this.zoom.y;
+  }
+  positionToScreen(position) {
+    // translate then scale as pan is in world (unthis.zoomed) coords
+    return new Vector2(position).sub(this.pan).mul(this.zoom);
+  }
+  positionFromScreen(screenPos) {
+    return new Vector2(screenPos).div(this.zoom).mul(this.pan);
+  }
+}
+
 export function useViewport({zoom, pan}) {
-  return useMemo(
-    () => ({
-      sizeToScreen(size) {
-        // just scale
-        return new Vector2(size).mul(zoom);
-      },
-      sizeFromScreen(screenSize) {
-        return new Vector2(screenSize).div(zoom);
-      },
-      sizeXFromScreen(screenSizeX) {
-        return screenSizeX / zoom.x;
-      },
-      sizeYFromScreen(screenSizeY) {
-        return screenSizeY / zoom.y;
-      },
-      positionToScreen(position) {
-        // translate then scale, as pan is in world (unzoomed) coords
-        return new Vector2(position).sub(pan).mul(zoom);
-      },
-      positionFromScreen(screenPos) {
-        return new Vector2(screenPos).div(zoom).mul(pan);
-      },
-    }),
-    [zoom, pan]
-  );
+  return useMemo(() => new ViewportTransformer({zoom, pan}), [zoom, pan]);
 }

@@ -39,6 +39,12 @@ export default function useLocalStorageAsync(stateKey, initialValue, options) {
     (options?.schemaVersion != null ? `:v${options.schemaVersion}` : '')
   }:${stateKey}`;
 
+  if (options.clear) {
+    try {
+      localStorage.removeItem(key);
+    } catch {}
+  }
+
   const storeValueRef = useRef(null);
   if (!storeValueRef.current) {
     const doStore = (valueToStore) => {

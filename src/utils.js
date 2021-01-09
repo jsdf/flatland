@@ -9,6 +9,30 @@ function scaleMapper(domain, range, rangeSize, domainValue) {
   return normalized * rangeSize + range[0];
 }
 
+function aliasMixin(options) {
+  let aliases = null;
+  if (options.alias) {
+    aliases = {
+      [options.alias.domain]: 'domain',
+      [options.alias.range]: 'range',
+    };
+  }
+
+  return {
+    to(type, value) {
+      if (!aliases || !(type in aliases)) {
+        throw new Error(`can't use to() without alias option`);
+      }
+      if (aliases[type] === 'domain') {
+        // range to domain
+        return this.invert(value);
+      } else {
+        // domain to range
+        return this.scale(value);
+      }
+    },
+  };
+}
 export function scaleLinear(domain, range, options = {}) {
   if (domain[0] > domain[1]) {
     throw new Error('domain must go from smaller to larger');
@@ -38,6 +62,7 @@ export function scaleLinear(domain, range, options = {}) {
       }
       return scaled;
     },
+    ...aliasMixin(options),
   };
 }
 
@@ -58,24 +83,16 @@ export function scaleDiscreteArbitrary(domain, range, options = {}) {
 
       return linear.invert(index / (range.length - 1));
     },
+    ...aliasMixin(options),
   };
 }
 
 export function scaleDiscreteQuantized(domain, range, options = {}) {
   const linear = scaleLinear(domain, range, options);
 
-  let aliases = null;
-  if (options.alias) {
-    aliases = {
-      [options.alias.domain]: 'domain',
-      [options.alias.range]: 'range',
-    };
-  }
-
   if (options.stepSize == null) {
     throw new Error('stepSize option is required');
   }
-
   return {
     scale(domainValue) {
       const rangeValue = linear.scale(domainValue);
@@ -90,15 +107,6 @@ export function scaleDiscreteQuantized(domain, range, options = {}) {
     invert(rangeValue) {
       return linear.invert(rangeValue);
     },
-    to(type, value) {
-      if (!aliases || !(type in aliases)) {
-        throw new Error(`can't use to() without alias option`);
-      }
-      if (aliases[type] == 'domain') {
-        return this.invert(value);
-      } else {
-        return this.scale(value);
-      }
-    },
+    ...aliasMixin(options),
   };
 }

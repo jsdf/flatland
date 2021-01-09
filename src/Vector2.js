@@ -11,6 +11,7 @@ export default class Vector2 {
   copyFrom({x, y} = {}) {
     this.x = x ?? 0;
     this.y = y ?? 0;
+    return this;
   }
 
   origin() {

@@ -6,6 +6,10 @@ export default class Rect {
     this.size = new Vector2(size);
   }
 
+  static fromAABB({min, max}) {
+    return new Rect({position: min, size: new Vector2(max).sub(min)});
+  }
+
   containsPoint(point) {
     if (
       // min

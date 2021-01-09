@@ -1,14 +1,12 @@
 import React from 'react';
-import ReactDOM from 'react-dom';
 
 import {
   useViewport,
-  makeViewportState,
   ViewportStateSerializer,
   DragPanBehavior,
   WheelZoomBehavior,
   WheelScrollBehavior,
-  zoomAtPoint,
+  makeViewportStateFromExtents,
 } from './viewport';
 
 import {useCanvasContext2d, drawRect, drawTextRect} from './canvasUtils';
@@ -17,7 +15,7 @@ import {getIntersectingEvent, findIntersectingEvents} from './renderableRect';
 
 import {useWindowDimensions, getDPR} from './windowUtils';
 
-import {BehaviorController, Behavior, useBehaviors} from './behavior';
+import {BehaviorController, useBehaviors} from './behavior';
 
 import Vector2 from './Vector2';
 import Rect from './Rect';
@@ -31,15 +29,7 @@ import {TooltipBehavior, Tooltip} from './Tooltip';
 
 import {wrap} from './mathUtils';
 
-const {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useCallback,
-  useImperativeHandle,
-  forwardRef,
-} = React;
+const {useEffect, useMemo, useRef, useState, useCallback} = React;
 
 const colors = [
   '#ff1e47', // r
@@ -53,6 +43,12 @@ const colors = [
 
 const TIMELINE_ROW_HEIGHT = 20;
 const QUARTER_NOTE_WIDTH = 10;
+const MIN_ZOOM_SCALE = 1;
+
+const MIN_ZOOM = new Vector2({
+  x: MIN_ZOOM_SCALE,
+  y: MIN_ZOOM_SCALE,
+});
 
 const scaleDegrees = range(7);
 
@@ -105,6 +101,7 @@ function TooltipContent({event}) {
 
 function App() {
   const {canvasRef, ctx, canvas} = useCanvasContext2d();
+  const viewportDimensions = useWindowDimensions();
 
   const [events, setEvents] = useState(initialEvents);
   const eventsMap = useMemo(() => new Map(events.map((ev) => [ev.id, ev])), [
@@ -122,6 +119,10 @@ function App() {
         {
           stepSize: 1,
           round: Math.round,
+          alias: {
+            domain: 'pixels',
+            range: 'scaleDegrees',
+          },
         }
       ),
     []
@@ -135,6 +136,10 @@ function App() {
         {
           stepSize: 1,
           round: Math.round,
+          alias: {
+            domain: 'pixels',
+            range: 'quarterNotes',
+          },
         }
       ),
     []
@@ -148,9 +153,35 @@ function App() {
     LOCALSTORAGE_CONFIG
   );
 
+  const getViewportStateZoomedToExtents = useCallback(
+    () =>
+      makeViewportStateFromExtents(
+        {
+          min: {
+            x: quantizerX.to('pixels', extents.start),
+            y: quantizerY.to('pixels', extents.minDegree),
+          },
+          max: {
+            x: quantizerX.to('pixels', extents.end),
+            y: quantizerY.to('pixels', extents.maxDegree + 1),
+          },
+        },
+        viewportDimensions
+      ),
+    [
+      quantizerX,
+      quantizerY,
+      extents.start,
+      extents.minDegree,
+      extents.end,
+      extents.maxDegree,
+      viewportDimensions,
+    ]
+  );
+
   const [viewportState, setViewportState] = useLocalStorageAsync(
     'viewportState',
-    makeViewportState,
+    getViewportStateZoomedToExtents,
     {
       ...ViewportStateSerializer,
       ...LOCALSTORAGE_CONFIG,
@@ -168,10 +199,12 @@ function App() {
       setEvents((events) =>
         events.map((ev) => {
           if (draggedEventsMap.has(ev.id)) {
-            const deltaXQuantized = quantizerX.scale(
+            const deltaXQuantized = quantizerX.to(
+              'quarterNotes',
               viewport.sizeXFromScreen(delta.x)
             );
-            const deltaYQuantized = quantizerY.scale(
+            const deltaYQuantized = quantizerY.to(
+              'scaleDegrees',
               viewport.sizeYFromScreen(delta.y)
             );
             const eventBeforeDrag = draggedEventsMap.get(ev.id);
@@ -233,6 +266,7 @@ function App() {
           dimensions: {x: true},
           viewportState,
           setViewportState,
+          minZoom: MIN_ZOOM,
         },
         wheelScroll: {
           viewportState,
@@ -264,20 +298,17 @@ function App() {
     }
   );
 
-  const windowDimensions = useWindowDimensions();
-  const canvasLogicalDimensions = windowDimensions;
-
   // rendering
   useEffect(() => {
     if (!ctx) return;
     const {canvas} = ctx;
     const dpr = getDPR();
     // clear canvas & update to fill window
-    canvas.width = canvasLogicalDimensions.width * dpr;
-    canvas.height = canvasLogicalDimensions.height * dpr;
+    canvas.width = viewportDimensions.width * dpr;
+    canvas.height = viewportDimensions.height * dpr;
 
-    canvas.style.width = `${canvasLogicalDimensions.width}px`;
-    canvas.style.height = `${canvasLogicalDimensions.height}px`;
+    canvas.style.width = `${viewportDimensions.width}px`;
+    canvas.style.height = `${viewportDimensions.height}px`;
 
     // Scale all drawing operations by the dpr, so you
     // don't have to worry about the difference.
@@ -320,12 +351,12 @@ function App() {
     events.forEach((ev) => {
       const rect = new Rect({
         position: viewport.positionToScreen({
-          x: quantizerX.invert(ev.start),
-          y: quantizerY.invert(ev.degree),
+          x: quantizerX.to('pixels', ev.start),
+          y: quantizerY.to('pixels', ev.degree),
         }),
         size: viewport.sizeToScreen({
-          x: ev.duration * QUARTER_NOTE_WIDTH,
-          y: TIMELINE_ROW_HEIGHT,
+          x: quantizerX.to('pixels', ev.duration),
+          y: quantizerY.to('pixels', 1),
         }),
       });
       drawRect(ctx, rect, {
@@ -343,7 +374,7 @@ function App() {
     events,
     viewport,
     selection,
-    canvasLogicalDimensions,
+    viewportDimensions,
     extents.start,
     extents.size,
     extents.minDegree,
@@ -365,13 +396,26 @@ function App() {
           cursor: mode === 'pan' ? 'grab' : null,
         }}
       />
-      <Controls
-        mode={mode}
-        onModeChange={setMode}
-        viewportState={viewportState}
-        onViewportStateChange={setViewportState}
-        canvasLogicalDimensions={canvasLogicalDimensions}
-      />
+
+      <div
+        style={{
+          position: 'absolute',
+          width: '50vw',
+          top: 0,
+          right: 0,
+          textAlign: 'right',
+        }}
+      >
+        <Controls
+          mode={mode}
+          onModeChange={setMode}
+          viewportState={viewportState}
+          minZoom={MIN_ZOOM}
+          onViewportStateChange={setViewportState}
+          getDefaultViewportState={getViewportStateZoomedToExtents}
+          viewportDimensions={viewportDimensions}
+        />
+      </div>
     </div>
   );
 }
