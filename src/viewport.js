@@ -174,15 +174,16 @@ export class WheelZoomBehavior extends Behavior {
 export function zoomInAtPointClamped(
   viewportState,
   pointInView,
+  updatedZoom,
   minZoom = new Vector2({x: 0, y: 0}),
   maxZoom = new Vector2({x: Infinity, y: Infinity})
 ) {
-  const updatedZoom = new Vector2({
-    x: clamp(viewportState.zoom.x, minZoom.x, maxZoom.x),
-    y: clamp(viewportState.zoom.y, minZoom.y, maxZoom.y),
+  const updatedZoomClamped = new Vector2({
+    x: clamp(updatedZoom.x, minZoom.x, maxZoom.x),
+    y: clamp(updatedZoom.y, minZoom.y, maxZoom.y),
   });
 
-  return zoomAtPoint(viewportState, pointInView, updatedZoom);
+  return zoomAtPoint(viewportState, pointInView, updatedZoomClamped);
 }
 
 export function makeViewportState() {
