@@ -68,3 +68,16 @@ export function drawTextRect(ctx, text, rect, attrs, props) {
 
   ctx.restore();
 }
+
+export function clearCanvas(ctx, canvasLogicalDimensions, dpr) {
+  // clear canvas & update to fill window
+  ctx.canvas.width = canvasLogicalDimensions.width * dpr;
+  ctx.canvas.height = canvasLogicalDimensions.height * dpr;
+
+  ctx.canvas.style.width = `${canvasLogicalDimensions.width}px`;
+  ctx.canvas.style.height = `${canvasLogicalDimensions.height}px`;
+
+  // Scale all drawing operations by the dpr, so you
+  // don't have to worry about the difference.
+  ctx.scale(dpr, dpr);
+}
