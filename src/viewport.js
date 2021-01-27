@@ -252,7 +252,7 @@ export class ViewportTransformer {
     return new Vector2(position).sub(this.pan).mul(this.zoom);
   }
   positionFromScreen(screenPos) {
-    return new Vector2(screenPos).div(this.zoom).mul(this.pan);
+    return new Vector2(screenPos).div(this.zoom).add(this.pan);
   }
 }
 
